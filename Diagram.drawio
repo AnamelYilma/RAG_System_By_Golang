@@ -1,0 +1,22 @@
+<mxfile host="65bd71144e">
+    <diagram id="8arDAql2cdALXwu1DaNY" name="Page-1">
+        <mxGraphModel dx="195" dy="156" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="2" value="Rag System Developement" style="rounded=0;whiteSpace=wrap;html=1;shadow=0;" vertex="1" parent="1">
+                    <mxGeometry x="230" y="90" width="120" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="Chunking" style="rounded=0;whiteSpace=wrap;html=1;shadow=0;rotation=0;labelBorderColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="230" y="210" width="120" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="" style="endArrow=classic;html=1;exitX=0.448;exitY=1.05;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="2" target="4">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="320" y="250" as="sourcePoint"/>
+                        <mxPoint x="288" y="200" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
