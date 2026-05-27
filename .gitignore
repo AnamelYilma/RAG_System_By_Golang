@@ -3,3 +3,5 @@
 /RAG_Techniques
 /StepByStep-RAG
 /Sample Git project
+/.gocache
+.env
