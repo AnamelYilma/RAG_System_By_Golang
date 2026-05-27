@@ -3,6 +3,7 @@ package vectorstore
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -45,6 +46,39 @@ func LoadConfigFromEnv() Config {
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if databaseURL == "" {
 		databaseURL = strings.TrimSpace(os.Getenv("POSTGRES_DSN"))
+	}
+
+	// If user provided DB_* parts instead of a full DSN, compose one here.
+	if databaseURL == "" {
+		host := strings.TrimSpace(os.Getenv("DB_HOST"))
+		if host != "" {
+			user := strings.TrimSpace(os.Getenv("DB_USER"))
+			password := strings.TrimSpace(os.Getenv("DB_PASSWORD"))
+			dbName := strings.TrimSpace(os.Getenv("DB_NAME"))
+			port := strings.TrimSpace(os.Getenv("DB_PORT"))
+			if port == "" {
+				port = "5432"
+			}
+
+			sslmode := strings.TrimSpace(os.Getenv("DB_SSLMODE"))
+			if sslmode == "" {
+				sslmode = strings.TrimSpace(os.Getenv("PGSSLMODE"))
+			}
+			if sslmode == "" {
+				sslmode = "disable"
+			}
+
+			if user == "" {
+				user = "postgres"
+			}
+			if dbName == "" {
+				dbName = "postgres"
+			}
+
+			// URL-escape user/password to be safe
+			databaseURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+				url.QueryEscape(user), url.QueryEscape(password), host, port, dbName, sslmode)
+		}
 	}
 	if backend == "" {
 		if databaseURL != "" {
