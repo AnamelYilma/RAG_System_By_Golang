@@ -10,10 +10,17 @@ import (
 
 	"MyRagByCivic/chunker"
 	"MyRagByCivic/rag"
+
+	"github.com/joho/godotenv"
 	documentloaders "github.com/tmc/langchaingo/documentloaders"
 )
 
 func main() {
+	// Load .env file
+	if err := godotenv.Load(); err != nil {
+		fmt.Println("No .env file found, using environment variables")
+	}
+
 	ctx := context.Background()
 
 	inputFolder := "./PDF"
