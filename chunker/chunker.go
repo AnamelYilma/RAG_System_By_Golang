@@ -7,52 +7,76 @@ import (
 )
 
 // =============================================
-// Global variables (created once when program starts)
-// These are like "tools" that help clean messy PDF text
+// FILE PURPOSE: Text Cleaning + Chunking
+// This file prepares raw PDF text for the RAG system.
 // =============================================
 
-// These regex patterns fix common PDF problems (built once for speed)
+// =============================================
+// GLOBAL VARIABLES (Created once when package loads)
+// These are "tools" that live for the whole program.
+// Reason: Building regex is expensive, so we do it only once.
+// =============================================
+
+// These regex patterns fix common PDF extraction problems
 var (
+	// punctuationSpacingRE: Fixes "word." + "Next" → "word. Next"
 	punctuationSpacingRE = regexp.MustCompile(`([.,:;!?])(\p{L})`)
+	
+	// lowerUpperSpacingRE: Fixes "CivicEducation" → "Civic Education"
 	lowerUpperSpacingRE  = regexp.MustCompile(`(\p{Ll})(\p{Lu})`)
+	
 	beforeBulletRE       = regexp.MustCompile(`([\p{L}\p{N}])([❖➢✓])`)
 	afterBulletRE        = regexp.MustCompile(`([❖➢✓])([\p{L}\p{N}])`)
+	
+	// These fix glued words like "lawsthe" → "laws the"
 	gluedPluralAndRE     = regexp.MustCompile(`([\p{L}]{4,}s)(and)\b`)
 	gluedTheRE           = regexp.MustCompile(`([\p{L}-]{7,})(the)\b`)
 	gluedOfRE            = regexp.MustCompile(`([\p{L}-]{7,})(of)\b`)
 	gluedRespectivelyRE  = regexp.MustCompile(`([\p{L}-]{4,})(respectively)\b`)
-	
 
-	// Fixes common typing mistakes from PDF extraction
+	// Fixes common OCR (scanning) mistakes
 	commonPDFTypos = strings.NewReplacer(
 		"Understnding", "Understanding",
 	)
 )
 
-// Chunk is one piece of text + useful information
-// Goal: Store each chunk so we can later create embeddings and show source
+// =============================================
+// DATA STRUCTURE
+// =============================================
+
+// Chunk holds one small piece of text + metadata
+// Why we need this struct: So we can trace back where each chunk came from
 type Chunk struct {
-	Text      string // The actual text content
-	FileName  string // Which PDF it came from
-	StartWord int    // Starting word position (useful for debugging)
-	EndWord   int    // Ending word position
+	Text      string // The actual cleaned text for this chunk
+	FileName  string // Original PDF filename (for source citation)
+	StartWord int    // Starting word index (useful for debugging)
+	EndWord   int    // Ending word index
 }
 
-// SliceText is the main function of this file
-// Goal: Take full PDF text → return many small overlapping chunks
+// =============================================
+// MAIN FUNCTION
+// =============================================
+
+// SliceText is the main public function of this package
+// What it does: Takes full PDF text → returns list of clean overlapping chunks
+// Why: Large text cannot fit in LLM prompt. Small chunks help precise retrieval.
 func SliceText(text string, size, overlap int, filename string) []Chunk {
-	text = cleanText(text)        // First clean the messy PDF text
-	words := splitIntoWords(text) // Split into list of words
+	// Step 1: Clean messy PDF text first
+	text = cleanText(text)
+	
+	// Step 2: Split into words
+	words := splitIntoWords(text)
 
 	var chunks []Chunk
 
-	// We move forward by (size - overlap) so chunks share some words
+	// Calculate step size for overlapping
+	// Example: size=450, overlap=90 → step=360 (move forward 360 words each time)
 	step := size - overlap
 	if step < 1 {
-		step = 1 // Prevent going backwards or zero step
+		step = 1 // Safety: never go backwards
 	}
 
-	// Create chunks by sliding window
+	// Sliding window loop - creates overlapping chunks
 	for i := 0; i < len(words); i += step {
 		end := i + size
 		if end > len(words) {
@@ -77,26 +101,31 @@ func SliceText(text string, size, overlap int, filename string) []Chunk {
 	return chunks
 }
 
-// cleanText fixes common problems from PDF extraction
-// Goal: Make text clean and readable before chunking
+// =============================================
+// HELPER FUNCTIONS
+// =============================================
+
+// cleanText fixes common PDF problems
+// Why: PDF text from scanners is often broken
 func cleanText(text string) string {
-	// Step 1: Fix known spelling mistakes
+	// Fix known typos
 	text = commonPDFTypos.Replace(text)
 
-	// Step 2: Fix spacing problems
+	// Fix spacing issues
 	text = strings.ReplaceAll(text, " .", ".")
 	text = strings.ReplaceAll(text, " ,", ",")
 	text = strings.ReplaceAll(text, " :", ":")
 
+	// Use regex to fix more complex spacing
 	text = punctuationSpacingRE.ReplaceAllString(text, `$1 $2`)
 	text = beforeBulletRE.ReplaceAllString(text, `$1 $2`)
 	text = afterBulletRE.ReplaceAllString(text, `$1 $2`)
 	text = lowerUpperSpacingRE.ReplaceAllString(text, `$1 $2`)
 
-	// Step 3: Fix glued words (very common in PDFs)
+	// Fix glued words (very common issue)
 	text = splitCommonSuffixWords(text)
 
-	// Step 4: Normalize all spaces
+	// Normalize all types of spaces (tab, newline, etc.) to single space
 	text = strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) {
 			return ' '
@@ -106,7 +135,7 @@ func cleanText(text string) string {
 
 	text = strings.TrimSpace(text)
 
-	// Remove double spaces
+	// Remove multiple spaces
 	for strings.Contains(text, "  ") {
 		text = strings.ReplaceAll(text, "  ", " ")
 	}
@@ -114,7 +143,7 @@ func cleanText(text string) string {
 	return text
 }
 
-// splitCommonSuffixWords fixes words that got stuck together
+// splitCommonSuffixWords fixes words stuck together like "lawsthe"
 func splitCommonSuffixWords(text string) string {
 	for {
 		updated := text
@@ -123,6 +152,7 @@ func splitCommonSuffixWords(text string) string {
 		updated = gluedOfRE.ReplaceAllString(updated, `$1 $2`)
 		updated = gluedRespectivelyRE.ReplaceAllString(updated, `$1 $2`)
 
+		// Stop when no more changes
 		if updated == text {
 			return updated
 		}
@@ -130,7 +160,8 @@ func splitCommonSuffixWords(text string) string {
 	}
 }
 
-// splitIntoWords breaks text into words
+// splitIntoWords breaks text into list of words
+// strings.Fields is smart: splits on any whitespace
 func splitIntoWords(text string) []string {
 	return strings.Fields(text)
 }
