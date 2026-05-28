@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"MyRagByCivic/chunker"
 	"MyRagByCivic/rag"
@@ -16,7 +17,6 @@ import (
 )
 
 func main() {
-	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		fmt.Println("No .env file found, using environment variables")
 	}
@@ -121,7 +121,9 @@ func main() {
 		}
 
 		fmt.Print("\nAssistant: ")
-		answer, err := ragSystem.Ask(ctx, question)
+		askCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		answer, err := ragSystem.Ask(askCtx, question)
+		cancel()
 		if err != nil {
 			fmt.Printf("\nError: %v\n", err)
 			continue
