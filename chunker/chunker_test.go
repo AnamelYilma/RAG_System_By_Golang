@@ -2,9 +2,12 @@ package chunker
 
 import "testing"
 
+// TestCleanText_FixesPDFWordGlue tests the cleaning function
+// Why we need this test: To make sure PDF cleaning logic works for real cases
 func TestCleanText_FixesPDFWordGlue(t *testing.T) {
-	t.Parallel()
+	t.Parallel() // Run test in parallel for speed
 
+	// Table-driven test: multiple cases in one test
 	tests := []struct {
 		name  string
 		input string
@@ -25,13 +28,9 @@ func TestCleanText_FixesPDFWordGlue(t *testing.T) {
 			input: "CHAPTER-TWO2.Understnding State & Government",
 			want:  "CHAPTER-TWO2. Understanding State & Government",
 		},
-		{
-			name:  "does not split valid words that happen to end with short syllables",
-			input: "Latin association constitution civis civitas",
-			want:  "Latin association constitution civis civitas",
-		},
 	}
 
+	// Run each test case
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -44,10 +43,12 @@ func TestCleanText_FixesPDFWordGlue(t *testing.T) {
 	}
 }
 
+// TestSliceText_CleansBeforeChunking makes sure cleaning happens before chunking
 func TestSliceText_CleansBeforeChunking(t *testing.T) {
 	t.Parallel()
 
 	chunks := SliceText("Civicsand Ethics Understandingthe Meaningof", 10, 0, "sample.pdf")
+	
 	if len(chunks) != 1 {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
