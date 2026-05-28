@@ -7,42 +7,72 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
+// =============================================
+// FILE PURPOSE
+// This file converts text chunks into vectors (numbers) by calling LM Studio.
+// =============================================
+
 const (
+	// Default values if .env is not set
 	DefaultBaseURL   = "http://127.0.0.1:1234/v1"
 	DefaultModelName = "text-embedding-nomic-embed-text-v1.5"
 )
 
-// Embedding represents one vector for one chunk
+// =============================================
+// DATA STRUCTURES
+// =============================================
+
+// Embedding holds one chunk + its vector
+// What it does: Keeps text and its numerical version together
+// Why: Needed for storage and search
 type Embedding struct {
-	Chunk     Chunk     // From your chunker
-	Vector    []float32 // The actual numbers (vector)
-	ModelName string    // Which model we used
+	Chunk     Chunk     // Original text chunk
+	Vector    []float32 // The numbers (vector)
+	ModelName string    // Which model created this vector
 }
 
-// Chunk reuses the chunker package type so callers don't need conversions.
+// Chunk reuses type from chunker (alias)
+// Why: Avoids duplicating the same struct
 type Chunk = chunker.Chunk
 
-// Client holds connection to LM Studio
+// =============================================
+// MAIN CLIENT STRUCTURE
+// =============================================
+
+// Client holds everything needed to talk to LM Studio
+// What it does: Stores connection settings
+// Why: So we can reuse the same client many times
 type Client struct {
-	BaseURL    string
-	HTTPClient *http.Client
-	ModelName  string
+	BaseURL    string        // API base URL
+	HTTPClient *http.Client  // Reusable HTTP client with timeout
+	ModelName  string        // Embedding model name
 }
 
+// =============================================
+// CONSTRUCTOR FUNCTION
+// =============================================
+
 // NewClient creates a new embedding client
-// Goal: Prepare connection to local LM Studio
+// What it does + Why: Reads settings from .env and prepares connection
+// How: Checks environment variables with fallback to defaults
 func NewClient(modelName string) *Client {
+	// Read base URL from .env or use default
 	baseURL := strings.TrimSpace(os.Getenv("LM_STUDIO_BASE_URL"))
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
 
+	// Set model name (priority: parameter > .env > default)
 	modelName = strings.TrimSpace(modelName)
 	if modelName == "" {
 		modelName = strings.TrimSpace(os.Getenv("LM_STUDIO_EMBEDDING_MODEL"))
@@ -55,14 +85,20 @@ func NewClient(modelName string) *Client {
 		BaseURL:   baseURL,
 		ModelName: modelName,
 		HTTPClient: &http.Client{
-			Timeout: 60 * time.Second, // Give time for embedding
+			Timeout: 60 * time.Second, // Give enough time for slow models
 		},
 	}
 }
 
-// GetEmbedding gets vector for one text
-// Goal: Send one chunk text → receive vector
+// =============================================
+// CORE FUNCTIONS
+// =============================================
+
+// GetEmbedding gets vector for one single text
+// What it does: Sends text to LM Studio → returns vector numbers
+// Why: This is the basic operation for embeddings
 func (c *Client) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
+	// 1. Prepare JSON payload
 	payload := map[string]interface{}{
 		"model": c.ModelName,
 		"input": text,
@@ -73,6 +109,7 @@ func (c *Client) GetEmbedding(ctx context.Context, text string) ([]float32, erro
 		return nil, err
 	}
 
+	// 2. Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/embeddings", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, err
@@ -80,12 +117,14 @@ func (c *Client) GetEmbedding(ctx context.Context, text string) ([]float32, erro
 
 	req.Header.Set("Content-Type", "application/json")
 
+	// 3. Send request
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call LM Studio: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// 4. Check response status
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		message := strings.TrimSpace(string(body))
@@ -102,6 +141,7 @@ func (c *Client) GetEmbedding(ctx context.Context, text string) ([]float32, erro
 		)
 	}
 
+	// 5. Parse JSON response
 	var result struct {
 		Data []struct {
 			Embedding []float32 `json:"embedding"`
@@ -119,27 +159,48 @@ func (c *Client) GetEmbedding(ctx context.Context, text string) ([]float32, erro
 	return result.Data[0].Embedding, nil
 }
 
-// GetEmbeddingsForChunks processes many chunks
-// Goal: Take list of chunks → return list of embeddings
+// GetEmbeddingsForChunks processes many chunks concurrently
+// What it does: Takes multiple chunks → returns embeddings
+// Why: Much faster than calling one by one
 func (c *Client) GetEmbeddingsForChunks(ctx context.Context, chunks []Chunk) ([]Embedding, error) {
-	var embeddings []Embedding
+	embeddings := make([]Embedding, len(chunks))
+
+	// errgroup = group of goroutines with error handling
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(5) // Limit concurrent requests (safe for weak PC)
+
+	var mu sync.Mutex
+	completed := 0
 
 	for i, chunk := range chunks {
-		fmt.Printf("Creating embedding %d/%d: %s...\n", i+1, len(chunks), chunk.FileName)
+		i, chunk := i, chunk // Important: capture loop variables
 
-		vector, err := c.GetEmbedding(ctx, chunk.Text)
-		if err != nil {
-			return nil, fmt.Errorf("failed at chunk %d: %w", i, err)
-		}
+		g.Go(func() error {
+			vector, err := c.GetEmbedding(gctx, chunk.Text)
+			if err != nil {
+				return fmt.Errorf("failed at chunk %d: %w", i, err)
+			}
 
-		embeddings = append(embeddings, Embedding{
-			Chunk:     chunk,
-			Vector:    vector,
-			ModelName: c.ModelName,
+			// Store result
+			embeddings[i] = Embedding{
+				Chunk:     chunk,
+				Vector:    vector,
+				ModelName: c.ModelName,
+			}
+
+			// Safe logging
+			mu.Lock()
+			completed++
+			slog.Info("creating embedding", "current", completed, "total", len(chunks), "file", chunk.FileName)
+			mu.Unlock()
+
+			return nil
 		})
+	}
 
-		// Small delay to not overload your PC
-		time.Sleep(100 * time.Millisecond)
+	// Wait for all to finish
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	return embeddings, nil
