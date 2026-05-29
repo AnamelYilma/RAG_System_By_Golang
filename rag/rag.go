@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"MyRagByCivic/embedding"
@@ -10,18 +11,39 @@ import (
 	"MyRagByCivic/vectorstore"
 )
 
+// =============================================
+// FILE PURPOSE
+// This is the central manager of the RAG system.
+// It connects all parts and provides two main functions: IndexDocuments and Ask.
+// =============================================
+
+// =============================================
+// MAIN STRUCTURE
+// =============================================
+
+// RAGSystem holds the three main tools needed for RAG
+// Why we use struct: To keep all tools in one place and pass them together
 type RAGSystem struct {
-	Embedder    *embedding.Client
-	VectorStore vectorstore.Store
-	LLM         *llm.Client
+	Embedder    *embedding.Client     // Used to create vectors
+	VectorStore vectorstore.Store     // Used to save and search vectors
+	LLM         *llm.Client           // Used to generate final answer
 }
 
+// =============================================
+// CONSTRUCTOR
+// =============================================
+
+// NewRAGSystem creates the full RAG system
+// What it does: Creates store, embedding client, and LLM client
+// Why: Called once at startup in main.go
 func NewRAGSystem(ctx context.Context, embedModel, llmModel string) (*RAGSystem, error) {
+	// Create vector store (memory or postgres)
 	store, err := vectorstore.NewStore(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	// Return fully connected RAG system
 	return &RAGSystem{
 		Embedder:    embedding.NewClient(embedModel),
 		VectorStore: store,
@@ -29,36 +51,60 @@ func NewRAGSystem(ctx context.Context, embedModel, llmModel string) (*RAGSystem,
 	}, nil
 }
 
+// =============================================
+// CLEANUP FUNCTION
+// =============================================
+
+// Close cleans up resources when program ends
+// What it does: Closes database connection if using postgres
+// Why: Prevents memory leaks and connection problems
 func (rag *RAGSystem) Close() error {
 	if rag == nil || rag.VectorStore == nil {
-		return nil
+		return nil // Safety check
 	}
 
 	return rag.VectorStore.Close()
 }
 
-func (rag *RAGSystem) IndexDocuments(ctx context.Context, chunks []embedding.Chunk) error {
-	fmt.Printf("   Indexing %d chunks...\n", len(chunks))
+// =============================================
+// INDEXING FUNCTION
+// =============================================
 
+// IndexDocuments takes chunks and saves them as vectors
+// What it does: Embed → Store
+// Why: This is how the system "learns" your PDFs
+func (rag *RAGSystem) IndexDocuments(ctx context.Context, chunks []embedding.Chunk) error {
+	slog.Info("indexing chunks", "count", len(chunks))
+
+	// Step 1: Convert text chunks to vectors
 	embeddings, err := rag.Embedder.GetEmbeddingsForChunks(ctx, chunks)
 	if err != nil {
 		return err
 	}
 
+	// Step 2: Save vectors into memory or database
 	if err := rag.VectorStore.Add(ctx, embeddings); err != nil {
 		return err
 	}
 
-	fmt.Printf("   Indexed %d chunks successfully\n", len(embeddings))
+	slog.Info("indexed chunks", "count", len(embeddings))
 	return nil
 }
 
+// =============================================
+// ASK FUNCTION (Most Important)
+// =============================================
+
+// Ask answers user question using RAG flow
+// What it does: Embed question → Search → Build prompt → Generate answer
 func (rag *RAGSystem) Ask(ctx context.Context, question string) (string, error) {
+	// Step 1: Turn user question into vector
 	questionVec, err := rag.Embedder.GetEmbedding(ctx, question)
 	if err != nil {
 		return "", fmt.Errorf("failed to embed question: %w", err)
 	}
 
+	// Step 2: Find most relevant chunks
 	relevantChunks, err := rag.VectorStore.Search(ctx, rag.Embedder.ModelName, questionVec, 3)
 	if err != nil {
 		return "", fmt.Errorf("failed to search vector store: %w", err)
@@ -67,66 +113,71 @@ func (rag *RAGSystem) Ask(ctx context.Context, question string) (string, error) 
 		return "I couldn't find any relevant information in the documents.", nil
 	}
 
+	// Step 3: Build clean context (no SOURCE 1, no Relevance %)
 	var contextBuilder strings.Builder
-	contextBuilder.WriteString("Here are the relevant excerpts from your documents:\n\n")
-
-	sourcesList := make([]string, 0, len(relevantChunks))
-	for i, chunk := range relevantChunks {
-		fileName := chunk.Chunk.FileName
-		sourcesList = append(sourcesList, fileName)
-
-		relevance := int(chunk.Score * 100)
-		contextBuilder.WriteString(fmt.Sprintf(
-			"SOURCE %d: [%s] (Relevance: %d%%)\n%s\n\n",
-			i+1,
-			fileName,
-			relevance,
-			chunk.Chunk.Text,
-		))
+	for _, chunk := range relevantChunks {
+		contextBuilder.WriteString(chunk.Chunk.Text)
+		contextBuilder.WriteString("\n\n")
 	}
 
-	uniqueSources := getUniqueSources(sourcesList)
-	exampleSource := "your documents"
-	if len(uniqueSources) > 0 {
-		exampleSource = uniqueSources[0]
-	}
+	// === Clean Prompt - This controls how AI answers ===
+	prompt := fmt.Sprintf(`You are a helpful and direct teacher for Civic Education.
 
-	prompt := fmt.Sprintf(`You are a helpful assistant answering questions based ONLY on the provided context.
+Answer the question in a natural, simple, and clear way.
+Do NOT say "According to", "Source", "The document says", or mention file names in your answer.
+Just give the answer directly.
 
-CONTEXT:
+Context from documents:
 %s
 
-QUESTION: %s
+Question: %s
 
-IMPORTANT INSTRUCTIONS:
-1. Answer based ONLY on the context above
-2. ALWAYS mention which source file the information comes from
-3. If information comes from multiple sources, list all of them
-4. Be specific - say "According to [filename]..."
-5. If answer isn't in context, say "I don't have enough information in your documents"
+Answer:`, contextBuilder.String(), question)
 
-EXAMPLE ANSWER FORMAT:
-"According to %s, [your answer based on the text]"
-
-ANSWER:`, contextBuilder.String(), question, exampleSource)
-
+	// Prepare messages for LLM
 	messages := []llm.Message{
-		{
-			Role:    "system",
-			Content: "You are a helpful assistant that ALWAYS cites which document file the information comes from. Never make up sources.",
-		},
+		{Role: "system", Content: "You are a helpful assistant. Answer directly and naturally. Never mention sources in the main answer."},
 		{Role: "user", Content: prompt},
 	}
 
+	// Step 4: Get answer from LLM
 	answer, err := rag.LLM.Generate(ctx, messages)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate answer: %w", err)
 	}
 
-	sourceFooter := buildSourceFooter(relevantChunks)
-	return fmt.Sprintf("%s\n\n%s", answer, sourceFooter), nil
+	// Step 5: Add clean sources at the bottom
+	finalAnswer := strings.TrimSpace(answer)
+	sourcesText := buildCleanSourceFooter(relevantChunks)
+
+	return finalAnswer + "\n\n" + sourcesText, nil
 }
 
+// =============================================
+// HELPER FUNCTIONS
+// =============================================
+
+// buildCleanSourceFooter creates simple sources list
+// What it does: Shows sources without too much detail
+func buildCleanSourceFooter(chunks []vectorstore.SearchResult) string {
+	var footer strings.Builder
+	footer.WriteString("--- Sources ---\n")
+
+	seen := make(map[string]bool)
+	for _, chunk := range chunks {
+		fileName := chunk.Chunk.FileName
+		if seen[fileName] {
+			continue
+		}
+		seen[fileName] = true
+
+		footer.WriteString(fmt.Sprintf("• %s\n", fileName))
+	}
+
+	return footer.String()
+}
+
+// (Old functions kept for compatibility - can be removed later)
 func getUniqueSources(sources []string) []string {
 	seen := make(map[string]bool, len(sources))
 	unique := make([]string, 0, len(sources))
@@ -134,11 +185,9 @@ func getUniqueSources(sources []string) []string {
 		if seen[source] {
 			continue
 		}
-
 		seen[source] = true
 		unique = append(unique, source)
 	}
-
 	return unique
 }
 
