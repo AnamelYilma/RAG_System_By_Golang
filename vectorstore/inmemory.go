@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"sort"
+	"sync"
 
 	"MyRagByCivic/embedding"
 )
@@ -18,6 +19,7 @@ import (
 // Why struct with slice: Simple and fast for small to medium data
 type InMemoryStore struct {
 	embeddings []embedding.Embedding // All stored embeddings
+	mu         sync.RWMutex
 }
 
 // =============================================
@@ -39,6 +41,9 @@ func NewInMemoryStore() *InMemoryStore {
 // Add saves new embeddings and replaces old ones for same file+model
 // What it does: Replace old data for same document to avoid duplicates
 func (vs *InMemoryStore) Add(_ context.Context, embeddings []embedding.Embedding) error {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
 	if len(embeddings) == 0 {
 		return nil // Nothing to do
 	}
@@ -67,6 +72,9 @@ func (vs *InMemoryStore) Add(_ context.Context, embeddings []embedding.Embedding
 // Search finds most similar chunks to the question vector
 // What it does: Calculate similarity → sort → return top results
 func (vs *InMemoryStore) Search(_ context.Context, modelName string, queryVector []float32, topK int) ([]SearchResult, error) {
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+
 	if len(vs.embeddings) == 0 {
 		return []SearchResult{}, nil
 	}
@@ -105,6 +113,9 @@ func (vs *InMemoryStore) Search(_ context.Context, modelName string, queryVector
 // Close does nothing for memory store
 // Why: No resources to clean up
 func (vs *InMemoryStore) Close() error {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
 	return nil
 }
 
