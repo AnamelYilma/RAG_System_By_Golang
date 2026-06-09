@@ -2,6 +2,9 @@
 
 This guide is written in simple English.
 
+This repo is now organized as an HTTP API first, so a frontend can call it directly.
+If you want the beginner explanation for `.method()` calls, read `BEGINNER_NOTES.md`.
+
 The goal is to help you understand this project step by step, even if you are still a beginner in Go, RAG, or project structure.
 
 You do not need to understand everything at one time.
